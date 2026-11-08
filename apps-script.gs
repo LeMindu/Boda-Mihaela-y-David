@@ -2,62 +2,86 @@
  * Recoge las confirmaciones de la web de boda en una hoja de Google Sheets
  * y (opcional) busca canciones en Spotify para el formulario.
  * Pegar en Extensiones > Apps Script de la hoja. Ver instrucciones.
+ *
+ * PESTAÑAS QUE CREA:
+ *  - Invitados:  UNA FILA POR PERSONA (nombre, tipo, asiste, autobús, alergias...). Es la tabla principal.
+ *  - Respuestas: una fila por formulario enviado (quién respondió, nº de personas, mensaje).
+ *  - Canciones:  una fila por canción propuesta.
+ *  - Resumen:    totales automáticos.
  */
+const H_INV  = "Invitados";
 const H_RESP = "Respuestas";
-const H_ASIS = "Asistentes";
 const H_CAN  = "Canciones";
 const H_RES  = "Resumen";
 const FORZAR = false; // pon true solo si quieres BORRAR todo y reconfigurar
 
+const CAB_INV = ["Fecha respuesta","Invitado","Tipo","¿Asiste?","Respuesta enviada por","¿Autobús?",
+  "¿Alergia o intolerancia?","Sin gluten / Celíaco","Sin lactosa","Vegetariano","Vegano","Frutos secos","Marisco","Otras alergias"];
+
 /** Ejecuta esta función UNA vez para crear las pestañas, cabeceras y el resumen. */
 function configurar() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const previa = ss.getSheetByName(H_RESP);
-  if (previa && previa.getLastRow() > 1 && !FORZAR) {
-    throw new Error("Ya hay respuestas guardadas. Para reconfigurar (y borrarlas) pon FORZAR = true.");
+  const hayDatos = ["Invitados","Respuestas","Asistentes"].some(n => {
+    const h = ss.getSheetByName(n);
+    return h && h.getLastRow() > 1;
+  });
+  if (hayDatos && !FORZAR) {
+    throw new Error("Ya hay datos guardados. Para reconfigurar (y borrarlos) pon FORZAR = true.");
   }
 
-  let r = ss.getSheetByName(H_RESP) || ss.insertSheet(H_RESP);
-  r.clear();
-  r.appendRow(["Fecha","Nombre","¿Asiste?","Adultos","Niños","Total personas","¿Autobús?","Plazas autobús","Mensaje"]);
-  r.setFrozenRows(1);
+  // --- Invitados (tabla principal) ---
+  const inv = preparar_(ss, H_INV, CAB_INV);
+  inv.getRange("A2:A").setNumberFormat("dd/mm/yyyy hh:mm");
+  inv.setColumnWidth(2, 230); inv.setColumnWidth(5, 200); inv.setColumnWidth(14, 230);
+  inv.setFrozenColumns(2);
+  inv.getRange(1, 1, inv.getMaxRows(), CAB_INV.length).createFilter();
+  inv.setConditionalFormatRules([
+    regla_(inv, "G2:M", "#fde2e2"),   // alergias en rojo suave
+    regla_(inv, "F2:F", "#dbeafe")    // autobús en azul suave
+  ]);
 
-  let a = ss.getSheetByName(H_ASIS) || ss.insertSheet(H_ASIS);
-  a.clear();
-  a.appendRow(["Fecha","Respuesta de","Asistente","Tipo","Sin gluten / Celíaco","Sin lactosa","Vegetariano","Vegano","Frutos secos","Marisco","Otras alergias","¿Autobús?"]);
-  a.setFrozenRows(1);
+  // --- Respuestas ---
+  const r = preparar_(ss, H_RESP, ["Fecha","Nombre","¿Asiste?","Adultos","Niños","Total personas","¿Autobús?","Plazas autobús","Mensaje"]);
+  r.getRange("A2:A").setNumberFormat("dd/mm/yyyy hh:mm");
+  r.setColumnWidth(2, 230); r.setColumnWidth(9, 380);
 
-  let c = ss.getSheetByName(H_CAN) || ss.insertSheet(H_CAN);
-  c.clear();
-  c.appendRow(["Fecha","Invitado","Título","Artista","Enlace Spotify"]);
-  c.setFrozenRows(1);
+  // --- Canciones ---
+  const c = preparar_(ss, H_CAN, ["Fecha","Invitado","Título","Artista","Enlace Spotify"]);
+  c.getRange("A2:A").setNumberFormat("dd/mm/yyyy hh:mm");
+  c.setColumnWidth(2, 230); c.setColumnWidth(3, 260); c.setColumnWidth(4, 200);
 
-  let s = ss.getSheetByName(H_RES) || ss.insertSheet(H_RES);
+  // --- Resumen (las fórmulas se guardan en inglés; Google Sheets las muestra en castellano) ---
+  const s = ss.getSheetByName(H_RES) || ss.insertSheet(H_RES);
   s.clear();
   const filas = [
-    ["Respuestas «Sí»", '=COUNTIF(Respuestas!C:C,"Sí")'],
-    ["Respuestas «No»", '=COUNTIF(Respuestas!C:C,"No")'],
-    ["Adultos confirmados", '=SUMIF(Respuestas!C:C,"Sí",Respuestas!D:D)'],
-    ["Niños confirmados", '=SUMIF(Respuestas!C:C,"Sí",Respuestas!E:E)'],
-    ["Total personas", '=SUM(Respuestas!F:F)'],
-    ["Plazas de autobús", '=SUM(Respuestas!H:H)'],
+    ["Personas confirmadas",              '=COUNTIF(Invitados!D:D,"Sí")'],
+    ["   Adultos",                        '=COUNTIFS(Invitados!D:D,"Sí",Invitados!C:C,"Adulto")'],
+    ["   Niños",                          '=COUNTIFS(Invitados!D:D,"Sí",Invitados!C:C,"Niño")'],
+    ["Respuestas «No puedo ir»",          '=COUNTIF(Respuestas!C:C,"No")'],
+    ["Plazas de autobús",                 '=COUNTIFS(Invitados!D:D,"Sí",Invitados!F:F,"Sí")'],
     ["", ""],
-    ["Sin gluten / Celíaco", '=COUNTIF(Asistentes!E:E,"Sí")'],
-    ["Sin lactosa", '=COUNTIF(Asistentes!F:F,"Sí")'],
-    ["Vegetariano", '=COUNTIF(Asistentes!G:G,"Sí")'],
-    ["Vegano", '=COUNTIF(Asistentes!H:H,"Sí")'],
-    ["Alergia a frutos secos", '=COUNTIF(Asistentes!I:I,"Sí")'],
-    ["Alergia a marisco", '=COUNTIF(Asistentes!J:J,"Sí")'],
-    ["Con otras alergias (ver pestaña Asistentes)", '=COUNTIF(Asistentes!K:K,"?*")'],
+    ["Con alguna alergia o intolerancia", '=COUNTIF(Invitados!G:G,"Sí")'],
+    ["   Sin gluten / Celíaco",           '=COUNTIF(Invitados!H:H,"Sí")'],
+    ["   Sin lactosa",                    '=COUNTIF(Invitados!I:I,"Sí")'],
+    ["   Vegetariano",                    '=COUNTIF(Invitados!J:J,"Sí")'],
+    ["   Vegano",                         '=COUNTIF(Invitados!K:K,"Sí")'],
+    ["   Alergia a frutos secos",         '=COUNTIF(Invitados!L:L,"Sí")'],
+    ["   Alergia a marisco",              '=COUNTIF(Invitados!M:M,"Sí")'],
+    ["   Con otras alergias (ver Invitados)", '=COUNTIF(Invitados!N:N,"?*")'],
     ["", ""],
-    ["Canciones propuestas", '=COUNTA(Canciones!C2:C)']
+    ["Canciones propuestas",              '=COUNTA(Canciones!C2:C)']
   ];
-  s.getRange(1, 1, filas.length, 2).setValues(filas);
-  s.setColumnWidth(1, 320);
-  s.getRange("A1:A16").setFontWeight("bold");
+  s.getRange(1, 1, filas.length, 1).setValues(filas.map(f => [f[0]]));
+  s.getRange(1, 2, filas.length, 1).setFormulas(filas.map(f => [f[1]]));
+  s.setColumnWidth(1, 330);
+  [1, 4, 5, 7, 16].forEach(n => s.getRange(n, 1, 1, 2).setFontWeight("bold"));
 
-  const hojaInicial = ss.getSheetByName("Hoja 1") || ss.getSheetByName("Sheet1");
-  if (hojaInicial && ss.getSheets().length > 1) ss.deleteSheet(hojaInicial);
+  // Orden de pestañas y limpieza de hojas antiguas
+  ss.setActiveSheet(inv); ss.moveActiveSheet(1);
+  ["Hoja 1", "Sheet1", "Asistentes"].forEach(n => {
+    const h = ss.getSheetByName(n);
+    if (h && ss.getSheets().length > 1) ss.deleteSheet(h);
+  });
 }
 
 function doPost(e) {
@@ -66,7 +90,8 @@ function doPost(e) {
   try {
     const d = JSON.parse(e.postData.contents);
     if (d.website) return ok_();                       // trampa antispam
-    if (!d.nombre) return ok_();
+    const quien = t_(d.nombre);
+    if (!quien) return ok_();
 
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     const ahora = new Date();
@@ -77,27 +102,35 @@ function doPost(e) {
     const total   = adultos + ninos;
 
     ss.getSheetByName(H_RESP).appendRow([
-      ahora, t_(d.nombre), asiste, adultos, ninos, total,
-      bus, bus === "Sí" ? total : 0, t_(d.mensaje)
+      ahora, quien, asiste, adultos, ninos, total, bus, bus === "Sí" ? total : 0, t_(d.mensaje)
     ]);
 
-    if (asiste === "Sí" && Array.isArray(d.asistentes)) {
-      const sh = ss.getSheetByName(H_ASIS);
-      d.asistentes.slice(0, 20).forEach(p => {
-        sh.appendRow([
-          ahora, t_(d.nombre), t_(p.nombre), p.tipo === "Niño" ? "Niño" : "Adulto",
-          si_(p.gluten), si_(p.lactosa), si_(p.vegetariano), si_(p.vegano),
-          si_(p.frutos), si_(p.marisco), t_(p.otras), bus
-        ]);
+    // Una fila por persona
+    const inv = ss.getSheetByName(H_INV);
+    if (asiste === "Sí") {
+      const lista = Array.isArray(d.asistentes) && d.asistentes.length ? d.asistentes.slice(0, 20) : [{ tipo: "Adulto", nombre: quien }];
+      let nA = 0, nN = 0;
+      lista.forEach(p => {
+        const esNino = p.tipo === "Niño";
+        esNino ? nN++ : nA++;
+        const tipo = esNino ? "Niño" : "Adulto";
+        const nombre = t_(p.nombre) || (tipo + " " + (esNino ? nN : nA) + " de " + quien);   // nunca queda vacío
+        const marcas = [p.gluten, p.lactosa, p.vegetariano, p.vegano, p.frutos, p.marisco].map(si_);
+        const otras = t_(p.otras);
+        const alergia = (marcas.indexOf("Sí") >= 0 || otras) ? "Sí" : "No";
+        inv.appendRow([ahora, nombre, tipo, "Sí", quien, bus, alergia].concat(marcas, [otras]));
       });
+    } else {
+      inv.appendRow([ahora, quien, "", "No", quien, "No", "", "", "", "", "", "", "", ""]);
     }
+
     if (asiste === "Sí" && Array.isArray(d.canciones)) {
       const sc = ss.getSheetByName(H_CAN);
       d.canciones.slice(0, 3).forEach(c => {
         const titulo = t_(c.titulo);
         if (!titulo) return;
         const enlace = /^https:\/\/(open\.spotify\.com|spotify\.link)\//.test(String(c.url || "")) ? String(c.url).slice(0, 300) : "";
-        sc.appendRow([ahora, t_(d.nombre), titulo, t_(c.artista), enlace]);
+        sc.appendRow([ahora, quien, titulo, t_(c.artista), enlace]);
       });
     }
     return ok_();
@@ -156,12 +189,23 @@ function buscarSpotify_(q) {
 }
 
 /* ---- utilidades ---- */
+function preparar_(ss, nombre, cabecera) {
+  const h = ss.getSheetByName(nombre) || ss.insertSheet(nombre);
+  const f = h.getFilter(); if (f) f.remove();
+  h.clear(); h.clearConditionalFormatRules();
+  h.getRange(1, 1, 1, cabecera.length).setValues([cabecera]).setFontWeight("bold").setBackground("#e8eadf");
+  h.setFrozenRows(1);
+  return h;
+}
+function regla_(hoja, rango, color) {
+  return SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo("Sí").setBackground(color).setRanges([hoja.getRange(rango)]).build();
+}
 function json_(o) { return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON); }
 function ok_() { return ContentService.createTextOutput("ok").setMimeType(ContentService.MimeType.TEXT); }
 function si_(v) { return v ? "Sí" : ""; }
 function num_(v, min, max) { v = parseInt(v, 10); return isNaN(v) ? min : Math.min(max, Math.max(min, v)); }
 // Limita longitud y evita que Sheets interprete el texto como fórmula
 function t_(v) {
-  v = String(v == null ? "" : v).slice(0, 1000);
+  v = String(v == null ? "" : v).trim().slice(0, 1000);
   return /^[=+\-@]/.test(v) ? "'" + v : v;
 }
