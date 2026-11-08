@@ -16,7 +16,7 @@ const H_RES  = "Resumen";
 const FORZAR = false; // pon true solo si quieres BORRAR todo y reconfigurar
 
 const CAB_INV = ["Fecha respuesta","Invitado","Tipo","¿Asiste?","Respuesta enviada por","¿Autobús?",
-  "¿Alergia o intolerancia?","Sin gluten / Celíaco","Sin lactosa","Vegetariano","Vegano","Frutos secos","Marisco","Otras alergias"];
+  "¿Alergia o intolerancia?","Sin gluten / Celíaco","Sin lactosa","Vegetariano","Vegano","Frutos secos","Marisco","Otras alergias","Canciones sugeridas"];
 
 /** Ejecuta esta función UNA vez para crear las pestañas, cabeceras y el resumen. */
 function configurar() {
@@ -32,7 +32,7 @@ function configurar() {
   // --- Invitados (tabla principal) ---
   const inv = preparar_(ss, H_INV, CAB_INV);
   inv.getRange("A2:A").setNumberFormat("dd/mm/yyyy hh:mm");
-  inv.setColumnWidth(2, 230); inv.setColumnWidth(5, 200); inv.setColumnWidth(14, 230);
+  inv.setColumnWidth(2, 230); inv.setColumnWidth(5, 200); inv.setColumnWidth(14, 230); inv.setColumnWidth(15, 340);
   inv.setFrozenColumns(2);
   inv.getRange(1, 1, inv.getMaxRows(), CAB_INV.length).createFilter();
   inv.setConditionalFormatRules([
@@ -41,9 +41,9 @@ function configurar() {
   ]);
 
   // --- Respuestas ---
-  const r = preparar_(ss, H_RESP, ["Fecha","Nombre","¿Asiste?","Adultos","Niños","Total personas","¿Autobús?","Plazas autobús","Mensaje"]);
+  const r = preparar_(ss, H_RESP, ["Fecha","Nombre","¿Asiste?","Adultos","Niños","Total personas","¿Autobús?","Plazas autobús","Mensaje","Canciones sugeridas"]);
   r.getRange("A2:A").setNumberFormat("dd/mm/yyyy hh:mm");
-  r.setColumnWidth(2, 230); r.setColumnWidth(9, 380);
+  r.setColumnWidth(2, 230); r.setColumnWidth(9, 300); r.setColumnWidth(10, 380);
 
   // --- Canciones ---
   const c = preparar_(ss, H_CAN, ["Fecha","Invitado","Título","Artista","Enlace Spotify"]);
@@ -101,8 +101,15 @@ function doPost(e) {
     const bus     = asiste === "Sí" && d.bus === "Sí" ? "Sí" : "No";
     const total   = adultos + ninos;
 
+    // Canciones propuestas (hasta 3, solo si asiste)
+    const canc = (asiste === "Sí" && Array.isArray(d.canciones) ? d.canciones.slice(0, 3) : []).map(c => ({
+      titulo: t_(c.titulo), artista: t_(c.artista),
+      url: /^https:\/\/(open\.spotify\.com|spotify\.link)\//.test(String(c.url || "")) ? String(c.url).slice(0, 300) : ""
+    })).filter(c => c.titulo);
+    const textoCanc = canc.map(c => c.titulo + (c.artista ? " – " + c.artista : "")).join(" | ");
+
     ss.getSheetByName(H_RESP).appendRow([
-      ahora, quien, asiste, adultos, ninos, total, bus, bus === "Sí" ? total : 0, t_(d.mensaje)
+      ahora, quien, asiste, adultos, ninos, total, bus, bus === "Sí" ? total : 0, t_(d.mensaje), textoCanc
     ]);
 
     // Una fila por persona
@@ -110,7 +117,7 @@ function doPost(e) {
     if (asiste === "Sí") {
       const lista = Array.isArray(d.asistentes) && d.asistentes.length ? d.asistentes.slice(0, 20) : [{ tipo: "Adulto", nombre: quien }];
       let nA = 0, nN = 0;
-      lista.forEach(p => {
+      lista.forEach((p, i) => {
         const esNino = p.tipo === "Niño";
         esNino ? nN++ : nA++;
         const tipo = esNino ? "Niño" : "Adulto";
@@ -118,21 +125,14 @@ function doPost(e) {
         const marcas = [p.gluten, p.lactosa, p.vegetariano, p.vegano, p.frutos, p.marisco].map(si_);
         const otras = t_(p.otras);
         const alergia = (marcas.indexOf("Sí") >= 0 || otras) ? "Sí" : "No";
-        inv.appendRow([ahora, nombre, tipo, "Sí", quien, bus, alergia].concat(marcas, [otras]));
+        inv.appendRow([ahora, nombre, tipo, "Sí", quien, bus, alergia].concat(marcas, [otras, i === 0 ? textoCanc : ""]));
       });
     } else {
-      inv.appendRow([ahora, quien, "", "No", quien, "No", "", "", "", "", "", "", "", ""]);
+      inv.appendRow([ahora, quien, "", "No", quien, "No", "", "", "", "", "", "", "", "", ""]);
     }
 
-    if (asiste === "Sí" && Array.isArray(d.canciones)) {
-      const sc = ss.getSheetByName(H_CAN);
-      d.canciones.slice(0, 3).forEach(c => {
-        const titulo = t_(c.titulo);
-        if (!titulo) return;
-        const enlace = /^https:\/\/(open\.spotify\.com|spotify\.link)\//.test(String(c.url || "")) ? String(c.url).slice(0, 300) : "";
-        sc.appendRow([ahora, quien, titulo, t_(c.artista), enlace]);
-      });
-    }
+    const sc = ss.getSheetByName(H_CAN);
+    canc.forEach(c => sc.appendRow([ahora, quien, c.titulo, c.artista, c.url]));
     return ok_();
   } catch (err) {
     return ContentService.createTextOutput("error").setMimeType(ContentService.MimeType.TEXT);
